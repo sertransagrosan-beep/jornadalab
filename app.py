@@ -10,6 +10,7 @@ st.title("Jornada Laboral Conductores")
 # ==============================
 
 HORAS_MAX_JORNADA = st.number_input("Horas máximas jornada", value=8.0)
+
 HORAS_DESCANSO_LARGO = st.number_input("Horas descanso largo", value=4.0)
 
 MIN_PAUSA = st.number_input("Pausa mínima (minutos)", value=30)
@@ -19,18 +20,47 @@ HORAS_MIN_PAUSA = MIN_PAUSA / 60
 UMBRAL_PARADA_MIN = MIN_PARADA / 60
 
 # ==============================
-# PARSER INTELIGENTE
+# PARSER INTELIGENTE PRO
 # ==============================
 
 def leer_csv_inteligente(file):
-    for sep in [";", ",", "\t"]:
-        for enc in ["utf-8", "latin1", "ISO-8859-1"]:
+
+    separadores = [";", ",", "\t", "|"]
+    encodings = ["utf-8", "latin1", "ISO-8859-1"]
+
+    for enc in encodings:
+        for sep in separadores:
             try:
-                df = pd.read_csv(file, sep=sep, encoding=enc)
-                if len(df.columns) > 3:
+                file.seek(0)
+
+                df = pd.read_csv(
+                    file,
+                    sep=sep,
+                    encoding=enc,
+                    engine="python",
+                    on_bad_lines="skip"
+                )
+
+                columnas = [c.lower() for c in df.columns]
+
+                if (
+                    len(df) > 10 and
+                    any("fecha" in c for c in columnas)
+                ):
                     return df
+
             except:
                 continue
+
+    # fallback
+    try:
+        file.seek(0)
+        df = pd.read_csv(file, engine="python", on_bad_lines="skip")
+        if len(df) > 10:
+            return df
+    except:
+        pass
+
     return pd.DataFrame()
 
 # ==============================
@@ -49,6 +79,10 @@ def limpiar_ubicacion(texto):
 # ==============================
 
 def calcular_ubic_principal(grupo):
+
+    if "ubicacion" not in grupo:
+        return ""
+
     g = grupo.copy()
     g["ubic_limpia"] = g["ubicacion"].apply(limpiar_ubicacion)
 
@@ -87,19 +121,29 @@ if files:
     lista_df = []
 
     for file in files:
+
         df_temp = leer_csv_inteligente(file)
 
+        st.write("📄 Archivo:", file.name)
+
         if df_temp.empty:
+            st.warning("No se pudo leer este archivo")
             continue
 
-        df_temp.columns = df_temp.columns.str.strip()
+        df_temp.columns = df_temp.columns.str.strip().str.lower()
+
+        st.write("Columnas detectadas:", df_temp.columns.tolist())
+        st.write("Filas:", len(df_temp))
 
         df_temp = df_temp.rename(columns={
-            "Fecha y Hora": "fecha_hora",
-            "Velocidad": "velocidad",
-            "Ignicion*": "ignicion",
-            "Conductor": "conductor",
-            "Localización": "ubicacion"
+            "fecha y hora": "fecha_hora",
+            "fecha": "fecha_hora",
+            "velocidad": "velocidad",
+            "ignicion*": "ignicion",
+            "ignicion": "ignicion",
+            "conductor": "conductor",
+            "localización": "ubicacion",
+            "localizacion": "ubicacion"
         })
 
         df_temp["vehiculo"] = file.name[:6].upper()
@@ -116,12 +160,9 @@ if files:
     # VALIDACIÓN
     # ==============================
 
-    columnas_requeridas = ["fecha_hora", "velocidad", "ignicion"]
-
-    for col in columnas_requeridas:
-        if col not in df.columns:
-            st.error(f"❌ Falta columna: {col}")
-            st.stop()
+    if "fecha_hora" not in df.columns:
+        st.error("❌ No se encontró columna de fecha")
+        st.stop()
 
     # ==============================
     # LIMPIEZA
@@ -129,11 +170,12 @@ if files:
 
     df["fecha_hora"] = pd.to_datetime(df["fecha_hora"], errors="coerce")
 
-    df["ignicion"] = df["ignicion"].astype(str).str.lower().str.strip()
+    df["ignicion"] = df.get("ignicion", "").astype(str).str.lower().str.strip()
     df["ignicion_on"] = df["ignicion"].isin(["encendido"])
 
     df["velocidad"] = (
-        df["velocidad"].astype(str)
+        df.get("velocidad", 0)
+        .astype(str)
         .str.replace(",", ".", regex=False)
         .str.extract(r"(\d+\.?\d*)")[0]
     )
@@ -273,13 +315,13 @@ if files:
 
     kpis = pd.DataFrame(kpis_list).round(2)
 
-    # FORMATO HORAS
     if "inicio_jornada" in kpis:
         kpis["inicio_jornada"] = pd.to_datetime(kpis["inicio_jornada"], errors="coerce").dt.strftime("%I:%M %p").str.lstrip("0")
 
     if "fin_jornada" in kpis:
         kpis["fin_jornada"] = pd.to_datetime(kpis["fin_jornada"], errors="coerce").dt.strftime("%I:%M %p").str.lstrip("0")
 
+    st.subheader("Resumen por conductor")
     st.dataframe(kpis)
 
     # ==============================
@@ -294,12 +336,14 @@ if files:
 
             df_conductor.to_excel(writer, sheet_name=conductor[:31], index=False)
 
-            bloques_cond = bloques[bloques["vehiculo"].isin(df_conductor["vehiculo"])]
+            bloques_cond = bloques[
+                bloques["vehiculo"].isin(df_conductor["vehiculo"])
+            ]
 
             bloques_cond.to_excel(writer, sheet_name=f"Bloques {conductor[:20]}", index=False)
 
     st.download_button(
         label="📥 Descargar Excel",
         data=buffer,
-        file_name="reporte.xlsx"
+        file_name="reporte_jornada.xlsx"
     )
