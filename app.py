@@ -11,17 +11,17 @@ st.title("Jornada Laboral Conductores")
 
 HORAS_MAX_JORNADA = st.number_input("Horas máximas jornada", value=8.0)
 HORAS_DESCANSO_LARGO = st.number_input("Horas descanso largo", value=4.0)
-MIN_PAUSA = st.number_input("Pausa mínima (minutos)", value=30, step=1)
-MIN_PARADA = st.number_input("Duración mínima parada (minutos)", value=20, step=1)
+MIN_PAUSA = st.number_input("Pausa mínima (minutos)", value=30)
+MIN_PARADA = st.number_input("Duración mínima parada (minutos)", value=20)
 
 HORAS_MIN_PAUSA = MIN_PAUSA / 60
 UMBRAL_PARADA_MIN = MIN_PARADA / 60
 
 # ==============================
-# PARSER INTELIGENTE
+# PARSER ROBUSTO
 # ==============================
 
-def leer_archivo_inteligente(file):
+def leer_archivo(file):
 
     nombre = file.name.lower()
 
@@ -29,22 +29,17 @@ def leer_archivo_inteligente(file):
     if nombre.endswith(".xlsx") or nombre.endswith(".xls"):
         try:
             df = pd.read_excel(file)
-            df = df.dropna(how="all")
             return df
         except:
             return pd.DataFrame()
 
     # CSV
-    separadores = [";", ",", "\t", "|"]
-    encodings = ["utf-8", "latin1", "ISO-8859-1"]
-
-    for enc in encodings:
-        for sep in separadores:
+    for enc in ["utf-8", "latin1", "ISO-8859-1"]:
+        for sep in [";", ",", "\t", "|"]:
             try:
                 file.seek(0)
                 df = pd.read_csv(file, sep=sep, encoding=enc, engine="python", on_bad_lines="skip")
-
-                if len(df) > 10:
+                if len(df) > 5:
                     return df
             except:
                 continue
@@ -52,19 +47,36 @@ def leer_archivo_inteligente(file):
     return pd.DataFrame()
 
 # ==============================
-# LIMPIEZA UBICACIÓN
+# DETECCIÓN DE COLUMNAS
+# ==============================
+
+def detectar_columnas(df):
+
+    cols = {c.lower(): c for c in df.columns}
+
+    def buscar(palabras):
+        for k, v in cols.items():
+            if any(p in k for p in palabras):
+                return v
+        return None
+
+    return {
+        "fecha": buscar(["fecha"]),
+        "velocidad": buscar(["velocidad"]),
+        "ignicion": buscar(["ignicion", "ignición"]),
+        "conductor": buscar(["conductor"]),
+        "ubicacion": buscar(["local", "ubic"]),
+        "coordenadas": buscar(["coord"])
+    }
+
+# ==============================
+# UBICACIÓN PRO
 # ==============================
 
 def limpiar_ubicacion(x):
     if pd.isna(x):
         return ""
-    x = str(x).lower().strip()
-    x = re.sub(r"\s+", " ", x)
-    return x
-
-# ==============================
-# UBICACIÓN PRINCIPAL PRO
-# ==============================
+    return re.sub(r"\s+", " ", str(x).lower().strip())
 
 def calcular_ubic_principal(grupo):
 
@@ -82,7 +94,7 @@ def calcular_ubic_principal(grupo):
         "estado": "count"
     }).rename(columns={"estado": "frecuencia"})
 
-    if len(resumen) == 0:
+    if resumen.empty:
         return ""
 
     resumen["score"] = (
@@ -94,10 +106,10 @@ def calcular_ubic_principal(grupo):
     return resumen.sort_values("score", ascending=False).index[0]
 
 # ==============================
-# CARGA DE ARCHIVOS
+# CARGA
 # ==============================
 
-files = st.file_uploader("Sube archivos (CSV o Excel)", accept_multiple_files=True)
+files = st.file_uploader("Sube archivos", accept_multiple_files=True)
 
 if files:
 
@@ -105,28 +117,35 @@ if files:
 
     for file in files:
 
-        df_temp = leer_archivo_inteligente(file)
+        df_temp = leer_archivo(file)
 
         if df_temp.empty:
             st.warning(f"No se pudo leer: {file.name}")
             continue
 
-        df_temp.columns = df_temp.columns.str.strip()
+        # LIMPIAR COLUMNAS
+        df_temp.columns = [str(c).strip() for c in df_temp.columns]
+        df_temp = df_temp.loc[:, ~pd.Series(df_temp.columns).str.contains("^Unnamed", na=False)]
+
+        cols = detectar_columnas(df_temp)
+
+        if not cols["fecha"]:
+            st.warning(f"Archivo sin fecha: {file.name}")
+            continue
 
         df_temp = df_temp.rename(columns={
-            "Fecha y Hora": "fecha_hora",
-            "Velocidad": "velocidad",
-            "Ignicion*": "ignicion",
-            "Conductor": "conductor",
-            "Localización": "ubicacion",
-            "Coordenadas": "coordenadas"
+            cols["fecha"]: "fecha_hora",
+            cols["velocidad"]: "velocidad",
+            cols["ignicion"]: "ignicion",
+            cols["conductor"]: "conductor",
+            cols["ubicacion"]: "ubicacion"
         })
 
         df_temp["vehiculo"] = file.name[:6].upper()
 
         lista_df.append(df_temp)
 
-    if len(lista_df) == 0:
+    if not lista_df:
         st.error("❌ No se pudieron leer archivos válidos")
         st.stop()
 
@@ -141,14 +160,11 @@ if files:
     df["ignicion"] = df["ignicion"].astype(str).str.lower()
     df["ignicion_on"] = df["ignicion"].isin(["encendido"])
 
-    df["velocidad"] = (
-        df["velocidad"]
-        .astype(str)
-        .str.replace(",", ".", regex=False)
-        .str.extract(r"(\d+\.?\d*)")[0]
-    )
-
-    df["velocidad"] = pd.to_numeric(df["velocidad"], errors="coerce").fillna(0)
+    df["velocidad"] = pd.to_numeric(
+        df["velocidad"].astype(str).str.replace(",", ".", regex=False)
+        .str.extract(r"(\d+\.?\d*)")[0],
+        errors="coerce"
+    ).fillna(0)
 
     df = df.sort_values(["vehiculo", "fecha_hora"])
     df["fecha"] = df["fecha_hora"].dt.date
@@ -157,10 +173,10 @@ if files:
     # ESTADOS
     # ==============================
 
-    def estado(row):
-        if row["ignicion_on"] and row["velocidad"] > 0:
+    def estado(r):
+        if r["ignicion_on"] and r["velocidad"] > 0:
             return "conduciendo"
-        elif row["ignicion_on"]:
+        elif r["ignicion_on"]:
             return "ralenti"
         return "apagado"
 
@@ -170,13 +186,13 @@ if files:
     # TIEMPOS
     # ==============================
 
-    df["fecha_sig"] = df.groupby("vehiculo")["fecha_hora"].shift(-1)
+    df["sig"] = df.groupby("vehiculo")["fecha_hora"].shift(-1)
 
     df["delta_horas"] = (
-        df["fecha_sig"] - df["fecha_hora"]
+        df["sig"] - df["fecha_hora"]
     ).dt.total_seconds() / 3600
 
-    df["delta_horas"] = df["delta_horas"].fillna(0)
+    df["delta_horas"] = df["delta_horas"].clip(lower=0).fillna(0)
 
     # ==============================
     # BLOQUES
@@ -191,35 +207,29 @@ if files:
         "ubicacion": ["first", "last"]
     })
 
-    bloques.columns = [
-        "estado", "inicio", "fin", "duracion_horas",
-        "ubic_inicio", "ubic_fin"
-    ]
-
+    bloques.columns = ["estado", "inicio", "fin", "duracion_horas", "ubic_inicio", "ubic_fin"]
     bloques = bloques.reset_index()
 
     # ==============================
     # KPIs
     # ==============================
 
-    kpis_list = []
+    kpis = []
 
-    for (vehiculo, fecha), grupo in df.groupby(["vehiculo", "fecha"]):
+    for (vehiculo, fecha), g in df.groupby(["vehiculo", "fecha"]):
 
-        conductor = grupo["conductor"].dropna().iloc[0] if "conductor" in grupo else "N/A"
+        conductor = g["conductor"].dropna().iloc[0] if "conductor" in g else "N/A"
 
-        inicio = grupo.loc[grupo["ignicion_on"], "fecha_hora"].min()
-        fin = grupo.loc[grupo["ignicion_on"], "fecha_hora"].max()
+        inicio = g.loc[g["ignicion_on"], "fecha_hora"].min()
+        fin = g.loc[g["ignicion_on"], "fecha_hora"].max()
 
-        horas_conduccion = grupo.loc[grupo["estado"] == "conduciendo", "delta_horas"].sum()
-        horas_ralenti = grupo.loc[grupo["estado"] == "ralenti", "delta_horas"].sum()
-        horas_trabajo = horas_conduccion + horas_ralenti
+        hc = g.loc[g["estado"] == "conduciendo", "delta_horas"].sum()
+        hr = g.loc[g["estado"] == "ralenti", "delta_horas"].sum()
+        ht = hc + hr
 
-        ubic_inicio = grupo.iloc[0]["ubicacion"] if "ubicacion" in grupo else ""
-        ubic_fin = grupo.iloc[-1]["ubicacion"] if "ubicacion" in grupo else ""
-        ubic_principal = calcular_ubic_principal(grupo)
+        ubic_principal = calcular_ubic_principal(g)
+        ubic_fin = g.iloc[-1]["ubicacion"] if "ubicacion" in g else ""
 
-        # BLOQUES DEL DÍA
         inicio_dia = pd.Timestamp(fecha)
         fin_dia = inicio_dia + pd.Timedelta(days=1)
 
@@ -229,30 +239,27 @@ if files:
             (bloques["fin"] > inicio_dia)
         ]
 
-        numero_paradas = 0
-        horas_descanso = 0
-        horas_pausa = 0
+        paradas = 0
+        descanso = 0
+        pausa = 0
 
         for _, b in bloques_dia.iterrows():
-
             ini = max(b["inicio"], inicio_dia)
             finb = min(b["fin"], fin_dia)
 
             if ini < finb:
-                horas = (finb - ini).total_seconds() / 3600
+                h = (finb - ini).total_seconds() / 3600
 
-                if b["estado"] in ["ralenti", "apagado"] and horas >= UMBRAL_PARADA_MIN:
-                    numero_paradas += 1
+                if b["estado"] in ["ralenti", "apagado"] and h >= UMBRAL_PARADA_MIN:
+                    paradas += 1
 
                 if b["estado"] == "apagado":
-                    if horas >= HORAS_DESCANSO_LARGO:
-                        horas_descanso += horas
-                    elif horas >= HORAS_MIN_PAUSA:
-                        horas_pausa += horas
+                    if h >= HORAS_DESCANSO_LARGO:
+                        descanso += h
+                    elif h >= HORAS_MIN_PAUSA:
+                        pausa += h
 
-        horas_extra = max(0, horas_trabajo - HORAS_MAX_JORNADA)
-
-        kpis_list.append({
+        kpis.append({
             "conductor": conductor,
             "vehiculo": vehiculo,
             "fecha": fecha,
@@ -261,25 +268,24 @@ if files:
             "ubicación": ubic_fin,
             "inicio_jornada": inicio,
             "fin_jornada": fin,
-            "numero_paradas": numero_paradas,
-            "horas_trabajo": horas_trabajo,
-            "horas_conduccion": horas_conduccion,
-            "horas_descanso": horas_descanso,
-            "horas_pausa": horas_pausa,
-            "horas_ralenti": horas_ralenti,
+            "numero_paradas": paradas,
+            "horas_trabajo": ht,
+            "horas_conduccion": hc,
+            "horas_descanso": descanso,
+            "horas_pausa": pausa,
+            "horas_ralenti": hr,
             "ubic_principal": ubic_principal
         })
 
-    kpis = pd.DataFrame(kpis_list).round(2)
+    kpis = pd.DataFrame(kpis).round(2)
 
-    # FORMATO HORA
     kpis["inicio_jornada"] = pd.to_datetime(kpis["inicio_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
     kpis["fin_jornada"] = pd.to_datetime(kpis["fin_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
 
     st.dataframe(kpis)
 
     # ==============================
-    # EXPORTAR EXCEL
+    # EXPORTAR
     # ==============================
 
     buffer = io.BytesIO()
@@ -289,19 +295,4 @@ if files:
         kpis.to_excel(writer, sheet_name="Resumen", index=False)
         bloques.to_excel(writer, sheet_name="Bloques", index=False)
 
-        for sheet in writer.sheets:
-            ws = writer.sheets[sheet]
-            df_sheet = kpis if sheet == "Resumen" else bloques
-
-            for i, col in enumerate(df_sheet.columns):
-                try:
-                    max_len = max(df_sheet[col].astype(str).map(len).max(), len(col))
-                except:
-                    max_len = len(col)
-                ws.column_dimensions[chr(65+i)].width = max_len + 2
-
-    st.download_button(
-        "📥 Descargar Excel",
-        buffer,
-        "reporte_jornada.xlsx"
-    )
+    st.download_button("Descargar Excel", buffer, "reporte.xlsx")
