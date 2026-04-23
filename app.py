@@ -38,21 +38,27 @@ def cargar_municipios():
     response = requests.get(url)
 
     if response.status_code != 200:
-        st.error("Error descargando shapefile")
+        st.error("Error descargando shapefile desde Drive")
         return None
 
-    # Guardar ZIP temporal
+    import tempfile, zipfile, os
+
+    # guardar temporal
     tmp = tempfile.NamedTemporaryFile(delete=False)
     tmp.write(response.content)
     tmp.close()
 
-    # Extraer ZIP
-    with zipfile.ZipFile(tmp.name, 'r') as zip_ref:
-        extract_path = tempfile.mkdtemp()
-        zip_ref.extractall(extract_path)
+    # extraer zip
+    extract_path = tempfile.mkdtemp()
 
-    # Buscar .shp
-    import os
+    try:
+        with zipfile.ZipFile(tmp.name, 'r') as zip_ref:
+            zip_ref.extractall(extract_path)
+    except:
+        st.error("El archivo no es un ZIP válido")
+        return None
+
+    # buscar .shp
     shp_file = None
     for file in os.listdir(extract_path):
         if file.endswith(".shp"):
@@ -60,7 +66,7 @@ def cargar_municipios():
             break
 
     if shp_file is None:
-        st.error("No se encontró .shp dentro del ZIP")
+        st.error("No se encontró archivo .shp dentro del ZIP")
         return None
 
     gdf = gpd.read_file(shp_file)
