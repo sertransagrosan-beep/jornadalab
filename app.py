@@ -3,17 +3,12 @@ import pandas as pd
 import numpy as np
 import io
 import requests
-import zipfile
-import tempfile
-
-# GEO
-import geopandas as gpd
-from shapely.geometry import Point
+import time
 
 st.title("Jornada Laboral Conductores")
 
 # ==============================
-# CONFIG
+# CONFIGURACIÓN
 # ==============================
 
 HORAS_MAX_JORNADA = st.number_input("Horas máximas jornada", value=8.0)
@@ -26,71 +21,78 @@ HORAS_MIN_PAUSA = MIN_PAUSA / 60
 UMBRAL_PARADA_MIN = MIN_PARADA / 60
 
 # ==============================
-# 📍 CARGA SHAPEFILE DESDE DRIVE
+# 🌍 GEO (SIN SHAPEFILE)
 # ==============================
 
-@st.cache_data
-def cargar_municipios():
+cache_municipios = {}
 
-    import requests
-    import tempfile
-    import zipfile
-    import os
-    import geopandas as gpd
+def coord_a_municipio(lat, lon):
 
-    file_id = "11GlpY5hw5G5v9dmzoZiy2jNVosEtUqVu"
+    if np.isnan(lat):
+        return ""
 
-    URL = "https://docs.google.com/uc?export=download"
+    key = f"{round(lat,4)}_{round(lon,4)}"
 
-    session = requests.Session()
-    response = session.get(URL, params={"id": file_id}, stream=True)
+    if key in cache_municipios:
+        return cache_municipios[key]
 
-    # 🔑 TOKEN (archivos grandes en Drive)
-    for key, value in response.cookies.items():
-        if key.startswith("download_warning"):
-            response = session.get(URL, params={"id": file_id, "confirm": value}, stream=True)
-            break
+    try:
+        url = "https://nominatim.openstreetmap.org/reverse"
 
-    # Guardar archivo temporal
-    tmp = tempfile.NamedTemporaryFile(delete=False)
+        params = {"lat": lat, "lon": lon, "format": "json"}
+        headers = {"User-Agent": "streamlit-app"}
 
-    for chunk in response.iter_content(32768):
-        if chunk:
-            tmp.write(chunk)
+        r = requests.get(url, params=params, headers=headers, timeout=5)
 
-    tmp.close()
+        if r.status_code == 200:
+            data = r.json()
+            address = data.get("address", {})
 
-    # 🔍 Verificar que sí sea ZIP
-    if not zipfile.is_zipfile(tmp.name):
-        st.error("El archivo descargado NO es un ZIP válido (Drive aún lo bloquea)")
-        return None
+            ciudad = (
+                address.get("city")
+                or address.get("town")
+                or address.get("village")
+                or address.get("county")
+                or ""
+            )
 
-    # Extraer
-    extract_path = tempfile.mkdtemp()
-    with zipfile.ZipFile(tmp.name, 'r') as zip_ref:
-        zip_ref.extractall(extract_path)
+            cache_municipios[key] = ciudad
 
-    # Buscar shapefile
-    shp_file = None
-    for root, dirs, files in os.walk(extract_path):
-        for f in files:
-            if f.endswith(".shp"):
-                shp_file = os.path.join(root, f)
-                break
+            time.sleep(1)  # evitar bloqueo API
 
-    if shp_file is None:
-        st.error("No se encontró archivo .shp dentro del ZIP")
-        return None
+            return ciudad
 
-    # Leer shapefile
-    gdf = gpd.read_file(shp_file)
+    except:
+        pass
 
-    return gdf
-
-municipios_gdf = cargar_municipios()
+    return f"{round(lat,3)}, {round(lon,3)}"
 
 # ==============================
-# GEO FUNCIONES
+# LECTOR INTELIGENTE
+# ==============================
+
+def leer_archivo(file):
+
+    try:
+        if file.name.endswith(".xlsx"):
+            df = pd.read_excel(file)
+        else:
+            try:
+                df = pd.read_csv(file, sep=";", encoding="utf-8")
+            except:
+                file.seek(0)
+                df = pd.read_csv(file, sep=None, engine="python")
+
+        df.columns = df.columns.astype(str).str.strip()
+        df = df.loc[:, ~df.columns.str.contains("^Unnamed", na=False)]
+
+        return df
+
+    except:
+        return None
+
+# ==============================
+# GEO AUX
 # ==============================
 
 def parse_coords(coord):
@@ -100,35 +102,77 @@ def parse_coords(coord):
     except:
         return np.nan, np.nan
 
-def coord_a_municipio(lat, lon):
+def distancia_metros(lat1, lon1, lat2, lon2):
+    R = 6371000
+    phi1, phi2 = np.radians(lat1), np.radians(lat2)
+    dphi = np.radians(lat2 - lat1)
+    dlambda = np.radians(lon2 - lon1)
 
-    if municipios_gdf is None or np.isnan(lat):
-        return f"{round(lat,3)}, {round(lon,3)}"
-
-    punto = Point(lon, lat)
-
-    try:
-        match = municipios_gdf[municipios_gdf.contains(punto)]
-        if len(match) > 0:
-            return match.iloc[0].get("NOMBRE_MPIO", "Municipio")
-    except:
-        pass
-
-    return f"{round(lat,3)}, {round(lon,3)}"
+    a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2)*np.sin(dlambda/2)**2
+    return 2 * R * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
 
 # ==============================
-# LECTOR
+# 🔥 CLUSTERING MEJORADO
 # ==============================
 
-def leer_archivo(file):
+def clusterizar_ubicaciones(df, radio=300):
 
-    try:
-        if file.name.endswith(".xlsx"):
-            return pd.read_excel(file)
-        else:
-            return pd.read_csv(file, sep=";", encoding="utf-8")
-    except:
-        return None
+    clusters = []
+
+    for _, row in df.iterrows():
+
+        lat, lon = row["lat"], row["lon"]
+        if np.isnan(lat):
+            continue
+
+        asignado = False
+
+        for c in clusters:
+
+            d = distancia_metros(lat, lon, c["lat"], c["lon"])
+
+            if d < radio:
+                total = c["peso"] + row["peso"]
+
+                c["lat"] = (c["lat"] * c["peso"] + lat * row["peso"]) / total
+                c["lon"] = (c["lon"] * c["peso"] + lon * row["peso"]) / total
+                c["peso"] = total
+                c["count"] += 1
+
+                asignado = True
+                break
+
+        if not asignado:
+            clusters.append({
+                "lat": lat,
+                "lon": lon,
+                "peso": row["peso"],
+                "count": 1
+            })
+
+    return clusters
+
+def obtener_ubic_principal(grupo):
+
+    g = grupo.copy()
+    g[["lat","lon"]] = g["Coordenadas"].apply(lambda x: pd.Series(parse_coords(x)))
+
+    g["peso"] = g.apply(
+        lambda r: r["delta_horas"] * 2 if r["estado"] in ["ralenti","apagado"]
+        else r["delta_horas"] * 0.3,
+        axis=1
+    )
+
+    g = g.dropna(subset=["lat"])
+
+    clusters = clusterizar_ubicaciones(g)
+
+    if len(clusters) == 0:
+        return ""
+
+    mejor = max(clusters, key=lambda x: x["peso"])
+
+    return coord_a_municipio(mejor["lat"], mejor["lon"])
 
 # ==============================
 # SUBIR ARCHIVOS
@@ -144,7 +188,7 @@ if files:
 
         df_temp = leer_archivo(file)
 
-        if df_temp is None:
+        if df_temp is None or df_temp.empty:
             continue
 
         df_temp = df_temp.rename(columns={
@@ -158,20 +202,30 @@ if files:
 
         lista_df.append(df_temp)
 
-    df = pd.concat(lista_df)
+    if len(lista_df) == 0:
+        st.error("No hay datos válidos")
+        st.stop()
+
+    df = pd.concat(lista_df, ignore_index=True)
 
     # LIMPIEZA
     df["fecha_hora"] = pd.to_datetime(df["fecha_hora"], errors="coerce")
 
     df["ignicion_on"] = df["ignicion"].astype(str).str.lower().isin(["encendido"])
 
+    df["velocidad"] = (
+        df["velocidad"].astype(str)
+        .str.replace(",", ".", regex=False)
+        .str.extract(r"(\d+\.?\d*)")[0]
+    )
+
     df["velocidad"] = pd.to_numeric(df["velocidad"], errors="coerce").fillna(0)
 
-    df = df.sort_values(["vehiculo","fecha_hora"])
+    df = df.sort_values(["vehiculo","fecha_hora"]).reset_index(drop=True)
 
     df["fecha"] = df["fecha_hora"].dt.date
 
-    # ESTADO
+    # ESTADOS
     df["estado"] = df.apply(
         lambda r: "conduciendo" if r["ignicion_on"] and r["velocidad"]>0
         else "ralenti" if r["ignicion_on"]
@@ -179,7 +233,7 @@ if files:
         axis=1
     )
 
-    # TIEMPO
+    # TIEMPOS
     df["fecha_siguiente"] = df.groupby("vehiculo")["fecha_hora"].shift(-1)
 
     df["delta_horas"] = (
@@ -188,7 +242,22 @@ if files:
 
     df["delta_horas"] = df["delta_horas"].fillna(0)
 
+    # BLOQUES
+    df["grupo"] = (df["estado"] != df["estado"].shift()).cumsum()
+
+    bloques = df.groupby(["vehiculo","grupo"]).agg({
+        "estado":"first",
+        "fecha_hora":["min","max"],
+        "delta_horas":"sum"
+    })
+
+    bloques.columns = ["estado","inicio","fin","duracion_horas"]
+    bloques = bloques.reset_index()
+
+    # ==============================
     # KPIs
+    # ==============================
+
     kpis_list = []
 
     for (vehiculo, fecha), grupo in df.groupby(["vehiculo","fecha"]):
@@ -200,21 +269,77 @@ if files:
 
         horas_conduccion = grupo.loc[grupo["estado"]=="conduciendo","delta_horas"].sum()
         horas_ralenti = grupo.loc[grupo["estado"]=="ralenti","delta_horas"].sum()
+        horas_trabajo = horas_conduccion + horas_ralenti
 
         lat, lon = parse_coords(grupo["Coordenadas"].dropna().iloc[-1])
         ubicacion = coord_a_municipio(lat, lon)
+
+        ubic_principal = obtener_ubic_principal(grupo)
+
+        # BLOQUES REALES (medianoche)
+        bloques_v = bloques[bloques["vehiculo"]==vehiculo]
+
+        numero_paradas = 0
+        horas_descanso = 0
+        horas_pausa = 0
+
+        for _, b in bloques_v.iterrows():
+
+            inicio = b["inicio"]
+            fin = b["fin"]
+
+            inicio_dia = pd.Timestamp(fecha)
+            fin_dia = inicio_dia + pd.Timedelta(days=1)
+
+            inicio_real = max(inicio, inicio_dia)
+            fin_real = min(fin, fin_dia)
+
+            if inicio_real < fin_real:
+
+                horas = (fin_real - inicio_real).total_seconds()/3600
+
+                if b["estado"] in ["ralenti","apagado"] and horas >= UMBRAL_PARADA_MIN:
+                    numero_paradas += 1
+
+                if b["estado"]=="apagado":
+                    if horas >= HORAS_DESCANSO_LARGO:
+                        horas_descanso += horas
+                    elif horas >= HORAS_MIN_PAUSA:
+                        horas_pausa += horas
 
         kpis_list.append({
             "conductor": conductor,
             "vehiculo": vehiculo,
             "fecha": fecha,
+            "origen": "",
+            "destino": "",
             "ubicación": ubicacion,
             "inicio_jornada": inicio_jornada,
             "fin_jornada": fin_jornada,
+            "numero_paradas": numero_paradas,
+            "horas_trabajo": horas_trabajo,
             "horas_conduccion": horas_conduccion,
-            "horas_ralenti": horas_ralenti
+            "horas_descanso": horas_descanso,
+            "horas_pausa": horas_pausa,
+            "horas_ralenti": horas_ralenti,
+            "ubic_principal": ubic_principal
         })
 
-    kpis = pd.DataFrame(kpis_list)
+    kpis = pd.DataFrame(kpis_list).round(2)
+
+    kpis["inicio_jornada"] = pd.to_datetime(kpis["inicio_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
+    kpis["fin_jornada"] = pd.to_datetime(kpis["fin_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
 
     st.dataframe(kpis)
+
+    # ==============================
+    # EXPORTAR
+    # ==============================
+
+    buffer = io.BytesIO()
+
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        kpis.to_excel(writer, sheet_name="Resumen", index=False)
+        bloques.to_excel(writer, sheet_name="Bloques", index=False)
+
+    st.download_button("Descargar Excel", data=buffer, file_name="reporte.xlsx")
