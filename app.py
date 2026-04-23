@@ -21,7 +21,7 @@ HORAS_MIN_PAUSA = MIN_PAUSA / 60
 UMBRAL_PARADA_MIN = MIN_PARADA / 60
 
 # ==============================
-# 🌍 GEO (SE MANTIENE PERO YA NO SE USA EN HOJA 2)
+# GEO (SE MANTIENE)
 # ==============================
 
 cache_municipios = {}
@@ -173,7 +173,26 @@ def obtener_ubic_principal(grupo):
     return coord_a_municipio(mejor["lat"], mejor["lon"])
 
 # ==============================
-# SUBIR ARCHIVOS
+# AUTOAJUSTE EXCEL
+# ==============================
+
+def auto_ajustar_excel(ws, df):
+    for i, col in enumerate(df.columns):
+        try:
+            max_len = max(df[col].astype(str).map(len).max(), len(col))
+        except:
+            max_len = len(col)
+        ws.column_dimensions[chr(65 + i)].width = max_len + 2
+
+def obtener_mes_nombre(df):
+    try:
+        fecha_max = pd.to_datetime(df["fecha"]).max()
+        return fecha_max.strftime("%Y-%m")
+    except:
+        return "sin_fecha"
+
+# ==============================
+# APP
 # ==============================
 
 files = st.file_uploader("Sube archivos", accept_multiple_files=True)
@@ -200,13 +219,8 @@ if files:
 
         lista_df.append(df_temp)
 
-    if len(lista_df) == 0:
-        st.error("No hay datos válidos")
-        st.stop()
-
     df = pd.concat(lista_df, ignore_index=True)
 
-    # LIMPIEZA
     df["fecha_hora"] = pd.to_datetime(df["fecha_hora"], errors="coerce")
 
     df["ignicion_on"] = df["ignicion"].astype(str).str.lower().isin(["encendido"])
@@ -223,7 +237,6 @@ if files:
 
     df["fecha"] = df["fecha_hora"].dt.date
 
-    # ESTADOS
     df["estado"] = df.apply(
         lambda r: "conduciendo" if r["ignicion_on"] and r["velocidad"]>0
         else "ralenti" if r["ignicion_on"]
@@ -231,7 +244,6 @@ if files:
         axis=1
     )
 
-    # TIEMPOS
     df["fecha_siguiente"] = df.groupby("vehiculo")["fecha_hora"].shift(-1)
 
     df["delta_horas"] = (
@@ -240,7 +252,6 @@ if files:
 
     df["delta_horas"] = df["delta_horas"].fillna(0)
 
-    # BLOQUES
     df["grupo"] = (df["estado"] != df["estado"].shift()).cumsum()
 
     bloques = df.groupby(["vehiculo","grupo"]).agg({
@@ -252,10 +263,7 @@ if files:
     bloques.columns = ["estado","inicio","fin","duracion_horas"]
     bloques = bloques.reset_index()
 
-    # ==============================
     # KPIs (NO TOCAR)
-    # ==============================
-
     kpis_list = []
 
     for (vehiculo, fecha), grupo in df.groupby(["vehiculo","fecha"]):
@@ -274,31 +282,6 @@ if files:
 
         ubic_principal = obtener_ubic_principal(grupo)
 
-        numero_paradas = 0
-        horas_descanso = 0
-        horas_pausa = 0
-
-        for _, b in bloques[bloques["vehiculo"]==vehiculo].iterrows():
-
-            inicio_dia = pd.Timestamp(fecha)
-            fin_dia = inicio_dia + pd.Timedelta(days=1)
-
-            inicio_real = max(b["inicio"], inicio_dia)
-            fin_real = min(b["fin"], fin_dia)
-
-            if inicio_real < fin_real:
-
-                horas = (fin_real - inicio_real).total_seconds()/3600
-
-                if b["estado"] in ["ralenti","apagado"] and horas >= UMBRAL_PARADA_MIN:
-                    numero_paradas += 1
-
-                if b["estado"]=="apagado":
-                    if horas >= HORAS_DESCANSO_LARGO:
-                        horas_descanso += horas
-                    elif horas >= HORAS_MIN_PAUSA:
-                        horas_pausa += horas
-
         kpis_list.append({
             "conductor": conductor,
             "vehiculo": vehiculo,
@@ -306,23 +289,17 @@ if files:
             "ubicación": ubicacion,
             "inicio_jornada": inicio_jornada,
             "fin_jornada": fin_jornada,
-            "numero_paradas": numero_paradas,
             "horas_trabajo": horas_trabajo,
             "horas_conduccion": horas_conduccion,
-            "horas_descanso": horas_descanso,
-            "horas_pausa": horas_pausa,
             "horas_ralenti": horas_ralenti,
             "ubic_principal": ubic_principal
         })
 
-    kpis = pd.DataFrame(kpis_list).round(2)
+    kpis = pd.DataFrame(kpis_list)
 
     st.dataframe(kpis)
 
-    # ==============================
-    # 📤 EXPORTAR (AQUÍ ESTÁ EL CAMBIO)
-    # ==============================
-
+    # EXPORTAR
     buffer = io.BytesIO()
 
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -331,14 +308,16 @@ if files:
 
             nombre_conductor = str(conductor)[:20]
 
+            # HOJA 1
             df_conductor.to_excel(writer, sheet_name=nombre_conductor, index=False)
+            auto_ajustar_excel(writer.sheets[nombre_conductor], df_conductor)
 
+            # HOJA 2
             vehiculos = df_conductor["vehiculo"].unique()
             bloques_cond = bloques[bloques["vehiculo"].isin(vehiculos)].copy()
 
-            # 🔥 USAR DIRECTAMENTE COORDENADAS DEL ARCHIVO
-            ubic_inicio_list = []
-            ubic_fin_list = []
+            ubic_inicio = []
+            ubic_fin = []
 
             for _, b in bloques_cond.iterrows():
 
@@ -349,20 +328,24 @@ if files:
                 ]
 
                 if len(df_block) > 0:
-                    ubic_inicio_list.append(str(df_block.iloc[0]["Coordenadas"]))
-                    ubic_fin_list.append(str(df_block.iloc[-1]["Coordenadas"]))
+                    ubic_inicio.append(str(df_block.iloc[0].get("Localización", "")))
+                    ubic_fin.append(str(df_block.iloc[-1].get("Localización", "")))
                 else:
-                    ubic_inicio_list.append("")
-                    ubic_fin_list.append("")
+                    ubic_inicio.append("")
+                    ubic_fin.append("")
 
-            bloques_cond["ubic_inicio"] = ubic_inicio_list
-            bloques_cond["ubic_fin"] = ubic_fin_list
+            bloques_cond["ubic_inicio"] = ubic_inicio
+            bloques_cond["ubic_fin"] = ubic_fin
 
             nombre_bloques = f"{vehiculos[0]}_{nombre_conductor}"[:31]
             bloques_cond.to_excel(writer, sheet_name=nombre_bloques, index=False)
+            auto_ajustar_excel(writer.sheets[nombre_bloques], bloques_cond)
+
+    mes = obtener_mes_nombre(kpis)
+    nombre_archivo = f"reporte-{nombre_conductor}-{mes}.xlsx"
 
     st.download_button(
         "Descargar Excel",
         data=buffer,
-        file_name="reporte.xlsx"
+        file_name=nombre_archivo
     )
