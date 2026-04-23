@@ -36,29 +36,22 @@ def cargar_municipios():
     import tempfile
     import zipfile
     import os
-    import re
+    import geopandas as gpd
 
     file_id = "11GlpY5hw5G5v9dmzoZiy2jNVosEtUqVu"
 
     URL = "https://docs.google.com/uc?export=download"
 
     session = requests.Session()
-
     response = session.get(URL, params={"id": file_id}, stream=True)
 
-    # 🔥 detectar token de confirmación (clave para archivos grandes)
-    def get_confirm_token(response):
-        for key, value in response.cookies.items():
-            if key.startswith("download_warning"):
-                return value
-        return None
+    # 🔑 TOKEN (archivos grandes en Drive)
+    for key, value in response.cookies.items():
+        if key.startswith("download_warning"):
+            response = session.get(URL, params={"id": file_id, "confirm": value}, stream=True)
+            break
 
-    token = get_confirm_token(response)
-
-    if token:
-        response = session.get(URL, params={"id": file_id, "confirm": token}, stream=True)
-
-    # guardar archivo temporal
+    # Guardar archivo temporal
     tmp = tempfile.NamedTemporaryFile(delete=False)
 
     for chunk in response.iter_content(32768):
@@ -67,31 +60,29 @@ def cargar_municipios():
 
     tmp.close()
 
-    # intentar abrir como zip
-    try:
-        extract_path = tempfile.mkdtemp()
-
-        with zipfile.ZipFile(tmp.name, 'r') as zip_ref:
-            zip_ref.extractall(extract_path)
-
-    except:
-        st.error("El archivo descargado NO es ZIP real (Drive está bloqueando)")
+    # 🔍 Verificar que sí sea ZIP
+    if not zipfile.is_zipfile(tmp.name):
+        st.error("El archivo descargado NO es un ZIP válido (Drive aún lo bloquea)")
         return None
 
-    # buscar shapefile
-    shp_file = None
+    # Extraer
+    extract_path = tempfile.mkdtemp()
+    with zipfile.ZipFile(tmp.name, 'r') as zip_ref:
+        zip_ref.extractall(extract_path)
 
-    for file in os.listdir(extract_path):
-        if file.endswith(".shp"):
-            shp_file = os.path.join(extract_path, file)
-            break
+    # Buscar shapefile
+    shp_file = None
+    for root, dirs, files in os.walk(extract_path):
+        for f in files:
+            if f.endswith(".shp"):
+                shp_file = os.path.join(root, f)
+                break
 
     if shp_file is None:
         st.error("No se encontró archivo .shp dentro del ZIP")
         return None
 
-    import geopandas as gpd
-
+    # Leer shapefile
     gdf = gpd.read_file(shp_file)
 
     return gdf
