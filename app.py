@@ -58,7 +58,7 @@ def coord_a_municipio(lat, lon):
 
             cache_municipios[key] = ciudad
 
-            time.sleep(1)  # evitar bloqueo API
+            time.sleep(0.2)  # evitar bloqueo API
 
             return ciudad
 
