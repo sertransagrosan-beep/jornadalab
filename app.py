@@ -32,34 +32,55 @@ UMBRAL_PARADA_MIN = MIN_PARADA / 60
 @st.cache_data
 def cargar_municipios():
 
-    file_id = "11GlpY5hw5G5v9dmzoZiy2jNVosEtUqVu"
-    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    import requests
+    import tempfile
+    import zipfile
+    import os
+    import re
 
-    response = requests.get(url)
+    file_id = "1POxehTrIfY2ZxnLreboTGKAxqFJM0tFU"
 
-    if response.status_code != 200:
-        st.error("Error descargando shapefile desde Drive")
+    URL = "https://docs.google.com/uc?export=download"
+
+    session = requests.Session()
+
+    response = session.get(URL, params={"id": file_id}, stream=True)
+
+    # 🔥 detectar token de confirmación (clave para archivos grandes)
+    def get_confirm_token(response):
+        for key, value in response.cookies.items():
+            if key.startswith("download_warning"):
+                return value
         return None
 
-    import tempfile, zipfile, os
+    token = get_confirm_token(response)
 
-    # guardar temporal
+    if token:
+        response = session.get(URL, params={"id": file_id, "confirm": token}, stream=True)
+
+    # guardar archivo temporal
     tmp = tempfile.NamedTemporaryFile(delete=False)
-    tmp.write(response.content)
+
+    for chunk in response.iter_content(32768):
+        if chunk:
+            tmp.write(chunk)
+
     tmp.close()
 
-    # extraer zip
-    extract_path = tempfile.mkdtemp()
-
+    # intentar abrir como zip
     try:
+        extract_path = tempfile.mkdtemp()
+
         with zipfile.ZipFile(tmp.name, 'r') as zip_ref:
             zip_ref.extractall(extract_path)
+
     except:
-        st.error("El archivo no es un ZIP válido")
+        st.error("El archivo descargado NO es ZIP real (Drive está bloqueando)")
         return None
 
-    # buscar .shp
+    # buscar shapefile
     shp_file = None
+
     for file in os.listdir(extract_path):
         if file.endswith(".shp"):
             shp_file = os.path.join(extract_path, file)
@@ -68,6 +89,8 @@ def cargar_municipios():
     if shp_file is None:
         st.error("No se encontró archivo .shp dentro del ZIP")
         return None
+
+    import geopandas as gpd
 
     gdf = gpd.read_file(shp_file)
 
