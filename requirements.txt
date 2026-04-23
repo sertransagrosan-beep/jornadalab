@@ -1,5 +1,7 @@
 streamlit
 pandas
 numpy
-openpyxl
+geopandas
 shapely
+requests
+openpyxl
