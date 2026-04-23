@@ -66,7 +66,7 @@ def construir_cache_municipios(coords_unicas):
 
     cache = {}
 
-    for coord in coords_unicas:
+    for coord in list(coords_unicas):
 
         try:
             lat, lon = map(float, str(coord).split(","))
@@ -254,7 +254,7 @@ if files:
     # 🔥 CACHE GEO (AQUÍ ESTÁ LA MAGIA)
     # ==============================
 
-    coords_unicas = df["Coordenadas"].dropna().unique()
+    coords_unicas = tuple(df["Coordenadas"].dropna().astype(str).unique())
     cache_geo = construir_cache_municipios(coords_unicas)
 
     # ==============================
