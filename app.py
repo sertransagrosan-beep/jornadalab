@@ -21,8 +21,8 @@ st.title("Jornada Laboral Conductores")
 HORAS_MAX_JORNADA = st.number_input("Horas máximas jornada", value=8.0)
 HORAS_DESCANSO_LARGO = st.number_input("Horas descanso largo", value=4.0)
 
-MIN_PAUSA = st.number_input("Pausa mínima (minutos)", value=30)
-MIN_PARADA = st.number_input("Duración mínima parada (minutos)", value=20)
+MIN_PAUSA = st.number_input("Pausa mínima (minutos)", value=34)
+MIN_PARADA = st.number_input("Duración mínima parada (minutos)", value=17)
 
 HORAS_MIN_PAUSA = MIN_PAUSA / 60
 UMBRAL_PARADA_MIN = MIN_PARADA / 60
