@@ -333,13 +333,105 @@ if files:
     st.dataframe(kpis)
 
     # ==============================
-    # EXPORTAR
+    # 📤 EXPORTAR PRO
     # ==============================
-
+    
+    def auto_ajustar_excel(ws, df):
+        for i, col in enumerate(df.columns):
+            try:
+                max_len = max(df[col].astype(str).map(len).max(), len(col))
+            except:
+                max_len = len(col)
+            ws.column_dimensions[chr(65 + i)].width = max_len + 2
+    
+    
+    def obtener_mes_nombre(df):
+        try:
+            fecha_max = pd.to_datetime(df["fecha"]).max()
+            return fecha_max.strftime("%Y-%m")
+        except:
+            return "sin_fecha"
+    
+    
     buffer = io.BytesIO()
-
+    
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        kpis.to_excel(writer, sheet_name="Resumen", index=False)
-        bloques.to_excel(writer, sheet_name="Bloques", index=False)
-
-    st.download_button("Descargar Excel", data=buffer, file_name="reporte.xlsx")
+    
+        for conductor, df_conductor in kpis.groupby("conductor"):
+    
+            nombre_conductor = str(conductor)[:20]
+    
+            # ==============================
+            # HOJA 1 → RESUMEN
+            # ==============================
+    
+            df_conductor.to_excel(writer, sheet_name=nombre_conductor, index=False)
+            ws = writer.sheets[nombre_conductor]
+            auto_ajustar_excel(ws, df_conductor)
+    
+            # ==============================
+            # HOJA 2 → BLOQUES + MUNICIPIO
+            # ==============================
+    
+            vehiculos = df_conductor["vehiculo"].unique()
+    
+            bloques_cond = bloques[bloques["vehiculo"].isin(vehiculos)].copy()
+    
+            # 🔥 agregar coordenadas (origen / destino)
+            df_coords = df.copy()
+            df_coords[["lat","lon"]] = df_coords["Coordenadas"].apply(
+                lambda x: pd.Series(parse_coords(x))
+            )
+    
+            # 🔥 cache fuerte para municipios
+            cache_geo = {}
+    
+            def coord_to_city_cached(lat, lon):
+                key = (round(lat,4), round(lon,4))
+                if key not in cache_geo:
+                    cache_geo[key] = coord_a_municipio(lat, lon)
+                return cache_geo[key]
+    
+            # obtener ubicaciones inicio/fin
+            ubic_inicio_list = []
+            ubic_fin_list = []
+    
+            for _, b in bloques_cond.iterrows():
+    
+                df_block = df_coords[
+                    (df_coords["vehiculo"] == b["vehiculo"]) &
+                    (df_coords["fecha_hora"] >= b["inicio"]) &
+                    (df_coords["fecha_hora"] <= b["fin"])
+                ]
+    
+                if len(df_block) > 0:
+                    lat_i, lon_i = df_block.iloc[0][["lat","lon"]]
+                    lat_f, lon_f = df_block.iloc[-1][["lat","lon"]]
+    
+                    ubic_inicio_list.append(coord_to_city_cached(lat_i, lon_i))
+                    ubic_fin_list.append(coord_to_city_cached(lat_f, lon_f))
+                else:
+                    ubic_inicio_list.append("")
+                    ubic_fin_list.append("")
+    
+            bloques_cond["ubic_inicio"] = ubic_inicio_list
+            bloques_cond["ubic_fin"] = ubic_fin_list
+    
+            nombre_bloques = f"{vehiculos[0]}_{nombre_conductor}"[:31]
+    
+            bloques_cond.to_excel(writer, sheet_name=nombre_bloques, index=False)
+            ws2 = writer.sheets[nombre_bloques]
+            auto_ajustar_excel(ws2, bloques_cond)
+    
+    # ==============================
+    # NOMBRE ARCHIVO
+    # ==============================
+    
+    mes = obtener_mes_nombre(kpis)
+    nombre_archivo = f"reporte-{nombre_conductor}-{mes}.xlsx"
+    
+    st.download_button(
+        "Descargar Excel",
+        data=buffer,
+        file_name=nombre_archivo
+    )
