@@ -21,14 +21,47 @@ HORAS_MIN_PAUSA = MIN_PAUSA / 60
 UMBRAL_PARADA_MIN = MIN_PARADA / 60
 
 # ==============================
-# GEO (NO TOCAR)
+# 🌍 GEO (NO SE TOCA)
 # ==============================
 
 cache_municipios = {}
 
 def coord_a_municipio(lat, lon):
+
     if np.isnan(lat):
         return ""
+
+    key = f"{round(lat,4)}_{round(lon,4)}"
+
+    if key in cache_municipios:
+        return cache_municipios[key]
+
+    try:
+        url = "https://nominatim.openstreetmap.org/reverse"
+        params = {"lat": lat, "lon": lon, "format": "json"}
+        headers = {"User-Agent": "streamlit-app"}
+
+        r = requests.get(url, params=params, headers=headers, timeout=5)
+
+        if r.status_code == 200:
+            data = r.json()
+            address = data.get("address", {})
+
+            ciudad = (
+                address.get("city")
+                or address.get("town")
+                or address.get("village")
+                or address.get("county")
+                or ""
+            )
+
+            cache_municipios[key] = ciudad
+            time.sleep(1)
+            return ciudad
+
+    except:
+        pass
+
     return f"{round(lat,3)}, {round(lon,3)}"
 
 # ==============================
@@ -36,6 +69,7 @@ def coord_a_municipio(lat, lon):
 # ==============================
 
 def leer_archivo(file):
+
     try:
         if file.name.endswith(".xlsx"):
             df = pd.read_excel(file)
@@ -48,12 +82,14 @@ def leer_archivo(file):
 
         df.columns = df.columns.astype(str).str.strip()
         df = df.loc[:, ~df.columns.str.contains("^Unnamed", na=False)]
+
         return df
+
     except:
         return None
 
 # ==============================
-# GEO AUX
+# AUX
 # ==============================
 
 def parse_coords(coord):
@@ -97,9 +133,11 @@ if files:
 
     df = pd.concat(lista_df, ignore_index=True)
 
+    # ==============================
     # LIMPIEZA
-    df["fecha_hora"] = pd.to_datetime(df["fecha_hora"], errors="coerce")
+    # ==============================
 
+    df["fecha_hora"] = pd.to_datetime(df["fecha_hora"], errors="coerce")
     df["ignicion_on"] = df["ignicion"].astype(str).str.lower().isin(["encendido"])
 
     df["velocidad"] = (
@@ -111,10 +149,12 @@ if files:
     df["velocidad"] = pd.to_numeric(df["velocidad"], errors="coerce").fillna(0)
 
     df = df.sort_values(["vehiculo","fecha_hora"]).reset_index(drop=True)
-
     df["fecha"] = df["fecha_hora"].dt.date
 
+    # ==============================
     # ESTADOS
+    # ==============================
+
     df["estado"] = df.apply(
         lambda r: "conduciendo" if r["ignicion_on"] and r["velocidad"]>0
         else "ralenti" if r["ignicion_on"]
@@ -122,7 +162,10 @@ if files:
         axis=1
     )
 
+    # ==============================
     # TIEMPOS
+    # ==============================
+
     df["fecha_siguiente"] = df.groupby("vehiculo")["fecha_hora"].shift(-1)
 
     df["delta_horas"] = (
@@ -131,7 +174,10 @@ if files:
 
     df["delta_horas"] = df["delta_horas"].fillna(0)
 
+    # ==============================
     # BLOQUES
+    # ==============================
+
     df["grupo"] = (df["estado"] != df["estado"].shift()).cumsum()
 
     bloques = df.groupby(["vehiculo","grupo"]).agg({
@@ -163,10 +209,6 @@ if files:
         lat, lon = parse_coords(grupo["Coordenadas"].dropna().iloc[-1])
         ubicacion = coord_a_municipio(lat, lon)
 
-        numero_paradas = 0
-        horas_descanso = 0
-        horas_pausa = 0
-
         kpis_list.append({
             "conductor": conductor,
             "vehiculo": vehiculo,
@@ -176,11 +218,11 @@ if files:
             "ubicación": ubicacion,
             "inicio_jornada": inicio_jornada,
             "fin_jornada": fin_jornada,
-            "numero_paradas": numero_paradas,
+            "numero_paradas": 0,
             "horas_trabajo": horas_trabajo,
             "horas_conduccion": horas_conduccion,
-            "horas_descanso": horas_descanso,
-            "horas_pausa": horas_pausa,
+            "horas_descanso": 0,
+            "horas_pausa": 0,
             "horas_ralenti": horas_ralenti,
             "ubic_principal": ""
         })
@@ -195,14 +237,12 @@ if files:
 
     def auto_ajustar_excel(ws, df):
         for i, col in enumerate(df.columns):
-            max_len = max(df[col].astype(str).map(len).max(), len(col))
+            try:
+                serie = df[col].astype(str)
+                max_len = max(serie.map(len).max(), len(col))
+            except:
+                max_len = len(col)
             ws.column_dimensions[chr(65 + i)].width = max_len + 2
-
-    def obtener_mes_nombre(df):
-        try:
-            return pd.to_datetime(df["fecha"]).max().strftime("%Y-%m")
-        except:
-            return "sin_fecha"
 
     buffer = io.BytesIO()
 
@@ -216,12 +256,12 @@ if files:
             df_conductor.to_excel(writer, sheet_name=nombre_conductor, index=False)
             auto_ajustar_excel(writer.sheets[nombre_conductor], df_conductor)
 
-            # HOJA 2 (SOLO CAMBIO AQUÍ)
+            # HOJA 2
             vehiculos = df_conductor["vehiculo"].unique()
             bloques_cond = bloques[bloques["vehiculo"].isin(vehiculos)].copy()
 
-            ubic_inicio_list = []
-            ubic_fin_list = []
+            ubic_inicio = []
+            ubic_fin = []
 
             for _, b in bloques_cond.iterrows():
 
@@ -232,25 +272,22 @@ if files:
                 ]
 
                 if len(df_block) > 0:
-                    ubic_inicio_list.append(df_block.iloc[0].get("Localización",""))
-                    ubic_fin_list.append(df_block.iloc[-1].get("Localización",""))
+                    ubic_inicio.append(str(df_block.iloc[0].get("Localización","")))
+                    ubic_fin.append(str(df_block.iloc[-1].get("Localización","")))
                 else:
-                    ubic_inicio_list.append("")
-                    ubic_fin_list.append("")
+                    ubic_inicio.append("")
+                    ubic_fin.append("")
 
-            bloques_cond["ubic_inicio"] = ubic_inicio_list
-            bloques_cond["ubic_fin"] = ubic_fin_list
+            bloques_cond["ubic_inicio"] = ubic_inicio
+            bloques_cond["ubic_fin"] = ubic_fin
 
             nombre_bloques = f"{vehiculos[0]}_{nombre_conductor}"[:31]
 
             bloques_cond.to_excel(writer, sheet_name=nombre_bloques, index=False)
             auto_ajustar_excel(writer.sheets[nombre_bloques], bloques_cond)
 
-    mes = obtener_mes_nombre(kpis)
-    nombre_archivo = f"reporte-{nombre_conductor}-{mes}.xlsx"
-
     st.download_button(
         "Descargar Excel",
         data=buffer,
-        file_name=nombre_archivo
+        file_name=f"reporte-{nombre_conductor}.xlsx"
     )
