@@ -342,6 +342,9 @@ if files:
         kpis.to_excel(writer, sheet_name="Resumen", index=False)
         bloques.to_excel(writer, sheet_name="Bloques", index=False)
     
+    # 👇 IMPORTANTE
+    buffer.seek(0)
+    
     # ==============================
     # NOMBRE DINÁMICO
     # ==============================
@@ -351,10 +354,12 @@ if files:
         conductor_nombre = kpis["conductor"].iloc[0]
         vehiculo = kpis["vehiculo"].iloc[0]
     
-        fecha_ref = pd.to_datetime(kpis["Fecha"].iloc[0])
+        # ✅ usar "fecha" (minúscula)
+        fecha_ref = pd.to_datetime(kpis["fecha"].iloc[0])
         mes_nombre = fecha_ref.strftime("%B").capitalize()
     
-        conductor_nombre = conductor_nombre.replace(" ", "_")
+        # limpiar nombre
+        conductor_nombre = str(conductor_nombre).replace(" ", "_")
     
         nombre_archivo = f"Jornada Laboral {conductor_nombre} {vehiculo} {mes_nombre}.xlsx"
     
