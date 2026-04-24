@@ -9,9 +9,6 @@ from typing import Optional, Tuple, Dict, List
 import hashlib
 import pickle
 from pathlib import Path
-from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
-from datetime import datetime
 
 # ==============================
 # CONFIGURACIÓN DE PÁGINA
@@ -45,51 +42,6 @@ def load_from_cache(key: str) -> Optional[str]:
         with open(cache_file, 'rb') as f:
             return pickle.load(f)
     return None
-
-# ==============================
-# FUNCIÓN PARA AUTO-AJUSTAR COLUMNAS EN EXCEL
-# ==============================
-def autoajustar_columnas(archivo_excel: io.BytesIO, nombre_hoja: str):
-    """Autoajusta el ancho de las columnas en una hoja específica"""
-    # Guardar el archivo temporalmente
-    temp_path = Path("temp_ajuste.xlsx")
-    with open(temp_path, 'wb') as f:
-        f.write(archivo_excel.getvalue())
-    
-    # Cargar y ajustar
-    wb = load_workbook(temp_path)
-    if nombre_hoja in wb.sheetnames:
-        ws = wb[nombre_hoja]
-        
-        for column in ws.columns:
-            max_length = 0
-            column_letter = get_column_letter(column[0].column)
-            
-            for cell in column:
-                try:
-                    if cell.value:
-                        # Calcular longitud del contenido
-                        cell_length = len(str(cell.value))
-                        if cell_length > max_length:
-                            max_length = min(cell_length, 50)  # Limitar a 50 caracteres
-                except:
-                    pass
-            
-            # Ajustar ancho con un margen
-            adjusted_width = min(max_length + 2, 50)
-            ws.column_dimensions[column_letter].width = adjusted_width
-    
-    # Guardar cambios
-    wb.save(temp_path)
-    
-    # Leer de vuelta al buffer
-    with open(temp_path, 'rb') as f:
-        archivo_excel.seek(0)
-        archivo_excel.truncate(0)
-        archivo_excel.write(f.read())
-    
-    # Limpiar archivo temporal
-    temp_path.unlink()
 
 # ==============================
 # CONFIGURACIÓN EN SIDEBAR
@@ -212,16 +164,6 @@ def coord_a_municipio(lat: float, lon: float) -> str:
     fallback = f"{round(lat,3)},{round(lon,3)}"
     save_to_cache(cache_key, fallback)
     return fallback
-
-def obtener_localizacion(coordenadas: str) -> str:
-    """Obtiene la localización formateada desde coordenadas"""
-    if pd.isna(coordenadas) or coordenadas == "":
-        return ""
-    try:
-        lat, lon = map(float, str(coordenadas).split(","))
-        return coord_a_municipio(lat, lon)
-    except:
-        return ""
 
 # ==============================
 # LECTOR INTELIGENTE OPTIMIZADO
@@ -380,8 +322,8 @@ def obtener_ubic_principal(grupo: pd.DataFrame, radio: float = 300) -> str:
 # PROCESAMIENTO PRINCIPAL OPTIMIZADO
 # ==============================
 @st.cache_data(ttl=3600)
-def procesar_datos(df_original: pd.DataFrame, config: Dict) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Procesamiento principal optimizado - retorna KPIs y Bloques"""
+def procesar_datos(df_original: pd.DataFrame, config: Dict) -> pd.DataFrame:
+    """Procesamiento principal optimizado"""
     
     df = df_original.copy()
     
@@ -403,12 +345,12 @@ def procesar_datos(df_original: pd.DataFrame, config: Dict) -> Tuple[pd.DataFram
     # Ordenar eficientemente
     df = df.sort_values(['vehiculo', 'fecha_hora']).reset_index(drop=True)
     
-    # Calcular estados vectorizado - CORREGIDO
+    # Calcular estados vectorizado
     df['estado'] = 'apagado'
     df.loc[df['ignicion_on'] & (df['velocidad'] > 0), 'estado'] = 'conduciendo'
     df.loc[df['ignicion_on'] & (df['velocidad'] == 0), 'estado'] = 'ralenti'
     
-    # Calcular delta horas vectorizado - CORREGIDO
+    # Calcular delta horas vectorizado
     df['fecha_siguiente'] = df.groupby('vehiculo')['fecha_hora'].shift(-1)
     df['delta_horas'] = (df['fecha_siguiente'] - df['fecha_hora']).dt.total_seconds() / 3600
     df['delta_horas'] = df['delta_horas'].fillna(0)
@@ -421,25 +363,9 @@ def procesar_datos(df_original: pd.DataFrame, config: Dict) -> Tuple[pd.DataFram
         'estado': 'first',
         'fecha_hora': ['min', 'max'],
         'delta_horas': 'sum'
-    }).reset_index()
-    
-    bloques.columns = ['vehiculo', 'grupo', 'estado', 'inicio', 'fin', 'duracion_horas']
-    
-    # Agregar ubicaciones a bloques
-    # Obtener localización del inicio y fin de cada bloque
-    bloques['inicio_localizacion'] = ''
-    bloques['fin_localizacion'] = ''
-    
-    for idx, row in bloques.iterrows():
-        # Buscar la localización en el momento del inicio
-        inicio_data = df[df['fecha_hora'] == row['inicio']]
-        if not inicio_data.empty and 'Localización' in inicio_data.columns:
-            bloques.at[idx, 'inicio_localizacion'] = obtener_localizacion(inicio_data['Localización'].iloc[0])
-        
-        # Buscar la localización en el momento del fin
-        fin_data = df[df['fecha_hora'] == row['fin']]
-        if not fin_data.empty and 'Localización' in fin_data.columns:
-            bloques.at[idx, 'fin_localizacion'] = obtener_localizacion(fin_data['Localización'].iloc[0])
+    })
+    bloques.columns = ['estado', 'inicio', 'fin', 'duracion_horas']
+    bloques = bloques.reset_index()
     
     # KPIs optimizados
     kpis_list = []
@@ -458,7 +384,7 @@ def procesar_datos(df_original: pd.DataFrame, config: Dict) -> Tuple[pd.DataFram
         inicio_jornada = ignicion_on['fecha_hora'].min()
         fin_jornada = ignicion_on['fecha_hora'].max()
         
-        # Calcular horas por estado - CORREGIDO: ahora sí calcula correctamente
+        # Calcular horas por estado vectorizado
         horas_conduccion = grupo.loc[grupo['estado'] == 'conduciendo', 'delta_horas'].sum()
         horas_ralenti = grupo.loc[grupo['estado'] == 'ralenti', 'delta_horas'].sum()
         horas_trabajo = horas_conduccion + horas_ralenti
@@ -512,14 +438,14 @@ def procesar_datos(df_original: pd.DataFrame, config: Dict) -> Tuple[pd.DataFram
             'numero_paradas': numero_paradas,
             'horas_trabajo': round(horas_trabajo, 2),
             'horas_conduccion': round(horas_conduccion, 2),
-            'horas_ralenti': round(horas_ralenti, 2),
             'horas_descanso': round(horas_descanso, 2),
             'horas_pausa': round(horas_pausa, 2),
+            'horas_ralenti': round(horas_ralenti, 2),
             'ubic_principal': ubic_principal
         })
     
     if not kpis_list:
-        return pd.DataFrame(), bloques
+        return pd.DataFrame()
     
     kpis = pd.DataFrame(kpis_list)
     
@@ -527,71 +453,7 @@ def procesar_datos(df_original: pd.DataFrame, config: Dict) -> Tuple[pd.DataFram
     kpis['inicio_jornada'] = pd.to_datetime(kpis['inicio_jornada']).dt.strftime('%I:%M %p').str.lstrip('0')
     kpis['fin_jornada'] = pd.to_datetime(kpis['fin_jornada']).dt.strftime('%I:%M %p').str.lstrip('0')
     
-    return kpis, bloques
-
-# ==============================
-# FUNCIÓN PARA GENERAR EXCEL CON MÚLTIPLES HOJAS
-# ==============================
-def generar_excel_multiple(kpis_por_conductor: Dict, bloques_por_conductor: Dict, nombre_mes: str) -> io.BytesIO:
-    """Genera Excel con múltiples hojas organizadas por conductor y vehículo"""
-    
-    output = io.BytesIO()
-    
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Hoja de resumen general
-        resumen_general = []
-        for conductor, data in kpis_por_conductor.items():
-            for _, row in data.iterrows():
-                resumen_general.append({
-                    'Conductor': conductor,
-                    'Vehículo': row['vehiculo'],
-                    'Fecha': row['fecha'],
-                    'Horas Trabajo': row['horas_trabajo'],
-                    'Horas Conducción': row['horas_conduccion'],
-                    'Número Paradas': row['numero_paradas']
-                })
-        
-        if resumen_general:
-            df_resumen = pd.DataFrame(resumen_general)
-            df_resumen.to_excel(writer, sheet_name='Resumen General', index=False)
-        
-        # Crear una hoja para cada combinación conductor-vehículo
-        for conductor, kpis_df in kpis_por_conductor.items():
-            for _, row in kpis_df.iterrows():
-                vehiculo = row['vehiculo']
-                fecha_jornada = row['fecha']
-                
-                # Nombre de la hoja para KPIs
-                nombre_hoja_kpi = f"{conductor}_{vehiculo}".replace('/', '_').replace('\\', '_')[:31]
-                
-                # Crear DataFrame para este conductor y vehículo específico
-                df_kpi = pd.DataFrame([row])
-                df_kpi.to_excel(writer, sheet_name=nombre_hoja_kpi, index=False)
-                
-                # Hoja de bloques para este conductor-vehículo
-                if conductor in bloques_por_conductor:
-                    bloques_df = bloques_por_conductor[conductor]
-                    bloques_vehiculo = bloques_df[bloques_df['vehiculo'] == vehiculo].copy()
-                    
-                    # Filtrar bloques por fecha
-                    fecha_inicio = pd.Timestamp(fecha_jornada)
-                    fecha_fin = fecha_inicio + pd.Timedelta(days=1)
-                    
-                    bloques_filtrados = bloques_vehiculo[
-                        (bloques_vehiculo['inicio'] >= fecha_inicio) & 
-                        (bloques_vehiculo['inicio'] < fecha_fin)
-                    ]
-                    
-                    if not bloques_filtrados.empty:
-                        nombre_hoja_bloques = f"Bloques_{conductor}_{vehiculo}".replace('/', '_').replace('\\', '_')[:31]
-                        bloques_filtrados.to_excel(writer, sheet_name=nombre_hoja_bloques, index=False)
-    
-    # Autoajustar todas las columnas de todas las hojas
-    for nombre_hoja in pd.ExcelWriter(output, engine='openpyxl').book.sheetnames:
-        autoajustar_columnas(output, nombre_hoja)
-    
-    output.seek(0)
-    return output
+    return kpis
 
 # ==============================
 # INTERFAZ PRINCIPAL
@@ -603,7 +465,7 @@ files = st.file_uploader(
     "📂 Sube archivos CSV o Excel",
     accept_multiple_files=True,
     type=['csv', 'xlsx', 'xls'],
-    help="Puedes subir múltiples archivos (diferentes conductores, vehículos y meses)"
+    help="Puedes subir múltiples archivos a la vez"
 )
 
 if files:
@@ -618,8 +480,7 @@ if files:
                     "Fecha y Hora": "fecha_hora",
                     "Velocidad": "velocidad", 
                     "Ignicion*": "ignicion",
-                    "Conductor": "conductor",
-                    "Localización": "Localización"
+                    "Conductor": "conductor"
                 }
                 
                 for old_name, new_name in column_mapping.items():
@@ -645,7 +506,7 @@ if files:
             'horas_max_jornada': HORAS_MAX_JORNADA
         }
         
-        kpis, bloques = procesar_datos(df, config)
+        kpis = procesar_datos(df, config)
     
     if kpis.empty:
         st.warning("⚠️ No se generaron KPIs. Verifica que los datos contengan información válida.")
@@ -663,7 +524,7 @@ if files:
     with col3:
         st.metric("Horas trabajo promedio", f"{kpis['horas_trabajo'].mean():.1f}h")
     with col4:
-        st.metric("Horas conducción promedio", f"{kpis['horas_conduccion'].mean():.1f}h")
+        st.metric("Paradas promedio", f"{kpis['numero_paradas'].mean():.1f}")
     
     # Dataframe interactivo
     st.subheader("📊 Resumen de Jornadas")
@@ -698,53 +559,31 @@ if files:
         }
     )
     
-    # Mostrar bloques (opcional)
-    with st.expander("📋 Ver detalles de bloques"):
-        st.dataframe(bloques, use_container_width=True)
-    
     # Exportar resultados
     st.subheader("💾 Exportar Resultados")
     
-    # Preparar datos por conductor para exportación múltiple
-    kpis_por_conductor = {}
-    bloques_por_conductor = {}
-    
-    for conductor in kpis['conductor'].unique():
-        kpis_por_conductor[conductor] = kpis[kpis['conductor'] == conductor]
-        bloques_por_conductor[conductor] = bloques[bloques['vehiculo'].isin(
-            kpis_por_conductor[conductor]['vehiculo'].unique()
-        )]
-    
-    # Obtener el mes de los datos
-    meses = kpis['fecha'].astype(str).str[:7].unique()
-    nombre_mes = meses[0] if len(meses) > 0 else datetime.now().strftime("%Y-%m")
-    
-    # Generar nombre de archivo
-    conductores_str = "_".join(kpis['conductor'].unique()[:3])
-    if len(kpis['conductor'].unique()) > 3:
-        conductores_str += "_y_otros"
-    
-    nombre_archivo = f"Jornada_Laboral_{conductores_str}_{nombre_mes}.xlsx"
-    
     col1, col2 = st.columns(2)
     with col1:
-        # Generar Excel con múltiples hojas
-        excel_multiple = generar_excel_multiple(kpis_por_conductor, bloques_por_conductor, nombre_mes)
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            kpis.to_excel(writer, sheet_name="Resumen", index=False)
+            # También exportar datos de bloques si están disponibles
+            if 'bloques' in locals():
+                bloques.to_excel(writer, sheet_name="Bloques", index=False)
         
         st.download_button(
-            label="📥 Descargar Excel (Múltiples hojas)",
-            data=excel_multiple,
-            file_name=nombre_archivo,
+            label="📥 Descargar Excel",
+            data=buffer,
+            file_name=f"reporte_jornadas_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     
     with col2:
-        # Opción de descarga simple CSV
         csv = kpis.to_csv(index=False)
         st.download_button(
-            label="📄 Descargar CSV (Resumen)",
+            label="📄 Descargar CSV",
             data=csv,
-            file_name=f"Resumen_Jornada_{nombre_mes}.csv",
+            file_name=f"reporte_jornadas_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
             mime="text/csv"
         )
     
@@ -755,10 +594,6 @@ if files:
             st.bar_chart(kpis.groupby('conductor')['horas_trabajo'].mean())
         with col2:
             st.bar_chart(kpis.groupby('vehiculo')['horas_trabajo'].mean())
-        
-        # Mostrar alertas si hay horas conducción en 0 (para debugging)
-        if (kpis['horas_conduccion'] == 0).any():
-            st.warning("⚠️ Algunos registros muestran 0 horas de conducción. Verifica que los datos contengan velocidad > 0 con ignición encendida.")
 
 else:
     st.info("👈 Sube archivos CSV o Excel para comenzar el análisis")
@@ -772,9 +607,8 @@ else:
         - **Ignicion***: estado del encendido (encendido/apagado)
         - **Coordenadas**: latitud,longitud (opcional)
         - **Conductor**: identificador del conductor
-        - **Localización**: texto con la ubicación (opcional)
         
-        Puedes subir múltiples archivos CSV (separados por ;) o Excel.
+        Puedes subir archivos CSV (separados por ;) o Excel.
         """)
 
 # Limpiar caché si es necesario
