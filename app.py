@@ -9,7 +9,7 @@ import hashlib
 import pickle
 
 st.set_page_config(page_title="Jornada Conductores PRO", layout="wide")
-st.title("🚛 Jornada Laboral Conductores - PRO")
+st.title("🚛 Jornada Laboral Conductores")
 
 # ==============================
 # CONFIG
@@ -77,11 +77,6 @@ def coord_a_municipio(lat, lon):
     save_cache(key, fallback)
     return fallback
 
-def normalizar_ciudad(c):
-    if not c:
-        return c
-    return c.replace("Municipio de ", "").strip()
-
 # ==============================
 # LECTOR
 # ==============================
@@ -103,7 +98,7 @@ def leer_archivo(file):
         return None
 
 # ==============================
-# GEO
+# GEO ORIGINAL (SE MANTIENE)
 # ==============================
 def parse_coords(coord):
     try:
@@ -112,64 +107,62 @@ def parse_coords(coord):
     except:
         return np.nan, np.nan
 
-# ==============================
-# CLUSTER
-# ==============================
 def distancia(lat1, lon1, lat2, lon2):
     R = 6371000
-    a = np.sin(np.radians(lat2-lat1)/2)**2 + \
-        np.cos(np.radians(lat1))*np.cos(np.radians(lat2))* \
-        np.sin(np.radians(lon2-lon1)/2)**2
-    return 2*R*np.arctan2(np.sqrt(a), np.sqrt(1-a))
+    phi1, phi2 = np.radians(lat1), np.radians(lat2)
+    dphi = np.radians(lat2 - lat1)
+    dlambda = np.radians(lon2 - lon1)
+    a = np.sin(dphi/2)**2 + np.cos(phi1)*np.cos(phi2)*np.sin(dlambda/2)**2
+    return 2 * R * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
 
 def clusterizar(df, radio):
     clusters = []
-    for _, r in df.iterrows():
-        if np.isnan(r["lat"]):
+    for _, row in df.iterrows():
+        lat, lon = row["lat"], row["lon"]
+        if np.isnan(lat):
             continue
         asignado = False
         for c in clusters:
-            if distancia(r["lat"], r["lon"], c["lat"], c["lon"]) < radio:
-                total = c["peso"] + r["peso"]
-                c["lat"] = (c["lat"]*c["peso"] + r["lat"]*r["peso"]) / total
-                c["lon"] = (c["lon"]*c["peso"] + r["lon"]*r["peso"]) / total
+            d = distancia(lat, lon, c["lat"], c["lon"])
+            if d < radio:
+                total = c["peso"] + row["peso"]
+                c["lat"] = (c["lat"] * c["peso"] + lat * row["peso"]) / total
+                c["lon"] = (c["lon"] * c["peso"] + lon * row["peso"]) / total
                 c["peso"] = total
+                c["count"] += 1
                 asignado = True
                 break
         if not asignado:
-            clusters.append({"lat": r["lat"], "lon": r["lon"], "peso": r["peso"]})
+            clusters.append({
+                "lat": lat,
+                "lon": lon,
+                "peso": row["peso"],
+                "count": 1
+            })
     return clusters
 
 def ubic_principal(grupo):
-
     g = grupo.copy()
     g[["lat","lon"]] = g["Coordenadas"].apply(lambda x: pd.Series(parse_coords(x)))
 
-    g["peso"] = np.where(
-        g["estado"].isin(["ralenti","apagado"]),
-        g["delta_horas"] * 2,
-        g["delta_horas"] * 0.3
+    g["peso"] = g.apply(
+        lambda r: r["delta_horas"] * 2 if r["estado"] in ["ralenti","apagado"]
+        else r["delta_horas"] * 0.3,
+        axis=1
     )
 
     g = g.dropna(subset=["lat"])
 
-    if g.empty:
-        coord_raw = grupo["Coordenadas"].dropna()
-        if not coord_raw.empty:
-            lat, lon = parse_coords(coord_raw.iloc[0])
-            return coord_a_municipio(lat, lon)
-        return "Sin ubicación"
-
     clusters = clusterizar(g, RADIO_CLUSTER)
 
-    if not clusters:
-        return "Sin ubicación"
+    if len(clusters) == 0:
+        return ""
 
-    best = max(clusters, key=lambda x: x["peso"])
-    return coord_a_municipio(best["lat"], best["lon"])
+    mejor = max(clusters, key=lambda x: x["peso"])
+    return coord_a_municipio(mejor["lat"], mejor["lon"])
 
 # ==============================
-# PROCESAMIENTO
+# PROCESAMIENTO OPTIMIZADO
 # ==============================
 def procesar(df):
 
@@ -192,7 +185,6 @@ def procesar(df):
     # ESTADOS
     UMBRAL_MOV = 3
     df["estado"] = "apagado"
-
     df.loc[df["ignicion_on"] & (df["velocidad"] >= UMBRAL_MOV), "estado"] = "conduciendo"
     df.loc[df["ignicion_on"] & (df["velocidad"] < UMBRAL_MOV), "estado"] = "ralenti"
 
@@ -233,19 +225,15 @@ def procesar(df):
         horas_ralenti = g.loc[g["estado"]=="ralenti","delta_horas"].sum()
         horas_trabajo = horas_conduccion + horas_ralenti
 
-        # 🔥 UBICACIÓN ROBUSTA (CLAVE)
+        # 🔥 UBICACIÓN ORIGINAL (CLAVE)
         coord_raw = g["Coordenadas"].dropna()
-
         if not coord_raw.empty:
             lat, lon = parse_coords(coord_raw.iloc[-1])
             ubic = coord_a_municipio(lat, lon)
         else:
-            ubic = "Sin ubicación"
+            ubic = ""
 
         ubic_p = ubic_principal(g)
-
-        ubic = normalizar_ciudad(ubic)
-        ubic_p = normalizar_ciudad(ubic_p)
 
         bloques_v = bloques[bloques["vehiculo"]==vehiculo]
 
@@ -257,7 +245,6 @@ def procesar(df):
         fin_d = inicio_d + pd.Timedelta(days=1)
 
         for _, b in bloques_v.iterrows():
-
             ini = max(b["inicio"], inicio_d)
             finb = min(b["fin"], fin_d)
 
@@ -293,7 +280,6 @@ def procesar(df):
 
     kpis = pd.DataFrame(kpis_list)
 
-    # ORDEN FINAL
     column_order = [
         "conductor","vehiculo","fecha","origen","destino","ubicacion",
         "inicio_jornada","fin_jornada","numero_paradas",
@@ -305,9 +291,7 @@ def procesar(df):
         if col not in kpis.columns:
             kpis[col] = ""
 
-    kpis = kpis[column_order]
-
-    return kpis
+    return kpis[column_order]
 
 # ==============================
 # APP
@@ -315,9 +299,7 @@ def procesar(df):
 files = st.file_uploader("Sube archivos", accept_multiple_files=True)
 
 if files:
-
     dfs = []
-
     for f in files:
         d = leer_archivo(f)
         if d is None or d.empty:
