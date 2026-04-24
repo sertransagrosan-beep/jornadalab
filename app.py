@@ -339,11 +339,11 @@ if files:
     buffer = io.BytesIO()
 
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-    kpis.to_excel(writer, sheet_name="Resumen", index=False)
-    bloques.to_excel(writer, sheet_name="Bloques", index=False)
-
+        kpis.to_excel(writer, sheet_name="Resumen", index=False)
+        bloques.to_excel(writer, sheet_name="Bloques", index=False)
+    
     # ==============================
-    # NOMBRE DINÁMICO DEL ARCHIVO
+    # NOMBRE DINÁMICO
     # ==============================
     
     if not kpis.empty:
@@ -354,7 +354,6 @@ if files:
         fecha_ref = pd.to_datetime(kpis["Fecha"].iloc[0])
         mes_nombre = fecha_ref.strftime("%B").capitalize()
     
-        # Opcional: limpiar espacios
         conductor_nombre = conductor_nombre.replace(" ", "_")
     
         nombre_archivo = f"Jornada Laboral {conductor_nombre} {vehiculo} {mes_nombre}.xlsx"
@@ -363,7 +362,7 @@ if files:
         nombre_archivo = "reporte.xlsx"
     
     # ==============================
-    # BOTÓN DESCARGA
+    # DESCARGA
     # ==============================
     
     st.download_button(
