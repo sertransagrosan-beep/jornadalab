@@ -249,7 +249,7 @@ if files:
         "estado": "first",
         "fecha_hora": ["min","max"],
         "delta_horas": "sum",
-        "Ubicacion": ["first","last"]  # 🔥 AQUÍ ESTÁ TODO
+        "Localización": ["first","last"]  # 🔥 AQUÍ ESTÁ TODO
     })
     
     bloques.columns = [
