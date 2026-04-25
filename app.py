@@ -4,6 +4,7 @@ import numpy as np
 import io
 import requests
 import time
+import re
 
 st.title("Jornada Laboral Conductores")
 
@@ -353,24 +354,54 @@ if files:
     
     # 👇 IMPORTANTE
     buffer.seek(0)
+   
+    # ==============================
+    # NOMBRE ARCHIVO
+    # ==============================
     
-    # ==============================
-    # NOMBRE DINÁMICO
-    # ==============================
+    def limpiar_texto(txt):
+        txt = str(txt).strip()
+        txt = " ".join(txt.split())  # elimina dobles espacios
+        txt = re.sub(r'[\\/*?:"<>|]', "", txt)  # elimina caracteres inválidos
+        return txt
     
     if not kpis.empty:
     
-        conductor_nombre = kpis["conductor"].iloc[0]
-        vehiculo = kpis["vehiculo"].iloc[0]
+        # --- CONDUCTORES ---
+        conductores = kpis["conductor"].dropna().unique()
     
-        # ✅ usar "fecha" (minúscula)
-        fecha_ref = pd.to_datetime(kpis["fecha"].iloc[0])
-        mes_nombre = fecha_ref.strftime("%B").capitalize()
+        if len(conductores) == 1:
+            conductor_nombre = limpiar_texto(conductores[0])
+        else:
+            conductor_nombre = "MULTIPLE_CONDUCTOR"
     
-        # limpiar nombre
-        conductor_nombre = str(conductor_nombre).replace(" ", "_")
+        # --- VEHICULO ---
+        vehiculos = kpis["vehiculo"].dropna().unique()
+        vehiculo = limpiar_texto(vehiculos[0]) if len(vehiculos) == 1 else ""
     
-        nombre_archivo = f"Jornada Laboral {conductor_nombre} {vehiculo} {mes_nombre}.xlsx"
+        # --- FECHAS ---
+        fechas = pd.to_datetime(kpis["fecha"])
+        fecha_min = fechas.min()
+        fecha_max = fechas.max()
+    
+        meses = {
+            1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
+            5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
+            9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
+        }
+    
+        mes_nombre = meses[fecha_min.month]
+    
+        # --- FORMATO FINAL ---
+        if fecha_min == fecha_max:
+            fecha_str = mes_nombre
+        else:
+            fecha_str = f"{mes_nombre} {fecha_min.day:02d}-{fecha_max.day:02d}"
+    
+        if vehiculo:
+            nombre_archivo = f"{conductor_nombre} {vehiculo} {fecha_str}.xlsx"
+        else:
+            nombre_archivo = f"{conductor_nombre} {fecha_str}.xlsx"
     
     else:
         nombre_archivo = "reporte.xlsx"
