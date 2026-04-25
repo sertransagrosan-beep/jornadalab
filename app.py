@@ -244,14 +244,23 @@ if files:
 
     # BLOQUES
     df["grupo"] = (df["estado"] != df["estado"].shift()).cumsum()
-
+    
     bloques = df.groupby(["vehiculo","grupo"]).agg({
-        "estado":"first",
-        "fecha_hora":["min","max"],
-        "delta_horas":"sum"
+        "estado": "first",
+        "fecha_hora": ["min","max"],
+        "delta_horas": "sum",
+        "Ubicacion": ["first","last"]  # 🔥 AQUÍ ESTÁ TODO
     })
-
-    bloques.columns = ["estado","inicio","fin","duracion_horas"]
+    
+    bloques.columns = [
+        "estado",
+        "inicio",
+        "fin",
+        "duracion_horas",
+        "inicio_ubica",
+        "fin_ubica"
+    ]
+    
     bloques = bloques.reset_index()
 
     # ==============================
