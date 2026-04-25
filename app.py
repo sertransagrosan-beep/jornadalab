@@ -263,7 +263,10 @@ if files:
     ]
     
     bloques = bloques.reset_index()
-
+    
+    # 🔥 REDONDEO A 2 DECIMALES
+    bloques["duracion_horas"] = bloques["duracion_horas"].round(2)
+    
     # ==============================
     # KPIs
     # ==============================
@@ -345,12 +348,34 @@ if files:
     # ==============================
     # EXPORTAR
     # ==============================
-
+    
     buffer = io.BytesIO()
-
+    
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+    
+        # Escribir hojas
         kpis.to_excel(writer, sheet_name="Resumen", index=False)
         bloques.to_excel(writer, sheet_name="Bloques", index=False)
+    
+        # ==============================
+        # AUTOAJUSTE COLUMNAS
+        # ==============================
+        ws_resumen = writer.book["Resumen"]
+        ws_bloques = writer.book["Bloques"]
+    
+        def auto_ajustar(ws):
+            for col in ws.columns:
+                max_length = 0
+                col_letter = col[0].column_letter
+    
+                for cell in col:
+                    if cell.value:
+                        max_length = max(max_length, len(str(cell.value)))
+    
+                ws.column_dimensions[col_letter].width = min(max_length + 2, 40)
+    
+        auto_ajustar(ws_resumen)
+        auto_ajustar(ws_bloques)
     
     # 👇 IMPORTANTE
     buffer.seek(0)
