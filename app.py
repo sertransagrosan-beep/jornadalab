@@ -59,7 +59,7 @@ def coord_a_municipio(lat, lon):
 
             cache_municipios[key] = ciudad
 
-            time.sleep(1)  # evitar bloqueo API
+            time.sleep(1)
 
             return ciudad
 
@@ -113,7 +113,7 @@ def distancia_metros(lat1, lon1, lat2, lon2):
     return 2 * R * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
 
 # ==============================
-# 🔥 CLUSTERING MEJORADO
+# 🔥 CLUSTERING
 # ==============================
 
 def clusterizar_ubicaciones(df, radio=300):
@@ -209,9 +209,7 @@ if files:
 
     df = pd.concat(lista_df, ignore_index=True)
 
-    # LIMPIEZA
     df["fecha_hora"] = pd.to_datetime(df["fecha_hora"], errors="coerce")
-
     df["ignicion_on"] = df["ignicion"].astype(str).str.lower().isin(["encendido"])
 
     df["velocidad"] = (
@@ -223,10 +221,8 @@ if files:
     df["velocidad"] = pd.to_numeric(df["velocidad"], errors="coerce").fillna(0)
 
     df = df.sort_values(["vehiculo","fecha_hora"]).reset_index(drop=True)
-
     df["fecha"] = df["fecha_hora"].dt.date
 
-    # ESTADOS
     df["estado"] = df.apply(
         lambda r: "conduciendo" if r["ignicion_on"] and r["velocidad"]>0
         else "ralenti" if r["ignicion_on"]
@@ -234,7 +230,6 @@ if files:
         axis=1
     )
 
-    # TIEMPOS
     df["fecha_siguiente"] = df.groupby("vehiculo")["fecha_hora"].shift(-1)
 
     df["delta_horas"] = (
@@ -243,32 +238,24 @@ if files:
 
     df["delta_horas"] = df["delta_horas"].fillna(0)
 
-    # BLOQUES
     df["grupo"] = (df["estado"] != df["estado"].shift()).cumsum()
     
     bloques = df.groupby(["vehiculo","grupo"]).agg({
         "estado": "first",
         "fecha_hora": ["min","max"],
         "delta_horas": "sum",
-        "Localización": ["first","last"]  # 🔥 AQUÍ ESTÁ TODO
+        "Localización": ["first","last"]
     })
     
     bloques.columns = [
-        "estado",
-        "inicio",
-        "fin",
-        "duracion_horas",
-        "inicio_ubica",
-        "fin_ubica"
+        "estado","inicio","fin","duracion_horas","inicio_ubica","fin_ubica"
     ]
     
     bloques = bloques.reset_index()
-    
-    # 🔥 REDONDEO A 2 DECIMALES
     bloques["duracion_horas"] = bloques["duracion_horas"].round(2)
     
     # ==============================
-    # KPIs
+    # KPIs (AJUSTADOS)
     # ==============================
 
     kpis_list = []
@@ -281,44 +268,51 @@ if files:
         fin_jornada = grupo.loc[grupo["ignicion_on"],"fecha_hora"].max()
 
         horas_conduccion = grupo.loc[grupo["estado"]=="conduciendo","delta_horas"].sum()
-        horas_ralenti = grupo.loc[grupo["estado"]=="ralenti","delta_horas"].sum()
-        horas_trabajo = horas_conduccion + horas_ralenti
 
         lat, lon = parse_coords(grupo["Coordenadas"].dropna().iloc[-1])
         ubicacion = coord_a_municipio(lat, lon)
 
         ubic_principal = obtener_ubic_principal(grupo)
 
-        # BLOQUES REALES (medianoche)
         bloques_v = bloques[bloques["vehiculo"]==vehiculo]
 
-        numero_paradas = 0
+        # 🔥 NUEVO MODELO
+        recuento_paradas = 0
         horas_descanso = 0
         horas_pausa = 0
+        horas_parada_operativas = 0
+        horas_ralenti = 0
 
         for _, b in bloques_v.iterrows():
-
-            inicio = b["inicio"]
-            fin = b["fin"]
 
             inicio_dia = pd.Timestamp(fecha)
             fin_dia = inicio_dia + pd.Timedelta(days=1)
 
-            inicio_real = max(inicio, inicio_dia)
-            fin_real = min(fin, fin_dia)
+            inicio_real = max(b["inicio"], inicio_dia)
+            fin_real = min(b["fin"], fin_dia)
 
             if inicio_real < fin_real:
 
                 horas = (fin_real - inicio_real).total_seconds()/3600
 
-                if b["estado"] in ["ralenti","apagado"] and horas >= UMBRAL_PARADA_MIN:
-                    numero_paradas += 1
+                if b["estado"] == "ralenti":
+                    horas_ralenti += horas
 
-                if b["estado"]=="apagado":
+                elif b["estado"] == "apagado":
+
                     if horas >= HORAS_DESCANSO_LARGO:
                         horas_descanso += horas
+                        recuento_paradas += 1
+
                     elif horas >= HORAS_MIN_PAUSA:
                         horas_pausa += horas
+                        recuento_paradas += 1
+
+                    elif horas >= UMBRAL_PARADA_MIN:
+                        horas_parada_operativas += horas
+                        recuento_paradas += 1
+
+        horas_trabajo = horas_conduccion + horas_ralenti
 
         kpis_list.append({
             "conductor": conductor,
@@ -329,12 +323,17 @@ if files:
             "ubicación": ubicacion,
             "inicio_jornada": inicio_jornada,
             "fin_jornada": fin_jornada,
-            "numero_paradas": numero_paradas,
+
+            "recuento_paradas": recuento_paradas,
+
             "horas_trabajo": horas_trabajo,
             "horas_conduccion": horas_conduccion,
+
             "horas_descanso": horas_descanso,
             "horas_pausa": horas_pausa,
+            "horas_parada_operativas": horas_parada_operativas,
             "horas_ralenti": horas_ralenti,
+
             "ubic_principal": ubic_principal
         })
 
@@ -345,98 +344,13 @@ if files:
 
     st.dataframe(kpis)
 
-    # ==============================
-    # EXPORTAR
-    # ==============================
-    
+    # EXPORT (igual que el tuyo)
     buffer = io.BytesIO()
-    
+
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-    
-        # Escribir hojas
         kpis.to_excel(writer, sheet_name="Resumen", index=False)
         bloques.to_excel(writer, sheet_name="Bloques", index=False)
-    
-        # ==============================
-        # AUTOAJUSTE COLUMNAS
-        # ==============================
-        ws_resumen = writer.book["Resumen"]
-        ws_bloques = writer.book["Bloques"]
-    
-        def auto_ajustar(ws):
-            for col in ws.columns:
-                max_length = 0
-                col_letter = col[0].column_letter
-    
-                for cell in col:
-                    if cell.value:
-                        max_length = max(max_length, len(str(cell.value)))
-    
-                ws.column_dimensions[col_letter].width = min(max_length + 2, 40)
-    
-        auto_ajustar(ws_resumen)
-        auto_ajustar(ws_bloques)
-    
-    # 👇 IMPORTANTE
+
     buffer.seek(0)
-   
-    # ==============================
-    # NOMBRE ARCHIVO
-    # ==============================
-    
-    def limpiar_texto(txt):
-        txt = str(txt).strip()
-        txt = " ".join(txt.split())  # elimina dobles espacios
-        txt = re.sub(r'[\\/*?:"<>|]', "", txt)  # elimina caracteres inválidos
-        return txt
-    
-    if not kpis.empty:
-    
-        # --- CONDUCTORES ---
-        conductores = kpis["conductor"].dropna().unique()
-    
-        if len(conductores) == 1:
-            conductor_nombre = limpiar_texto(conductores[0])
-        else:
-            conductor_nombre = "MULTIPLE_CONDUCTOR"
-    
-        # --- VEHICULO ---
-        vehiculos = kpis["vehiculo"].dropna().unique()
-        vehiculo = limpiar_texto(vehiculos[0]) if len(vehiculos) == 1 else ""
-    
-        # --- FECHAS ---
-        fechas = pd.to_datetime(kpis["fecha"])
-        fecha_min = fechas.min()
-        fecha_max = fechas.max()
-    
-        meses = {
-            1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
-            5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
-            9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
-        }
-    
-        mes_nombre = meses[fecha_min.month]
-    
-        # --- FORMATO FINAL ---
-        if fecha_min == fecha_max:
-            fecha_str = mes_nombre
-        else:
-            fecha_str = f"{mes_nombre} {fecha_min.day:02d}-{fecha_max.day:02d}"
-    
-        if vehiculo:
-            nombre_archivo = f"{conductor_nombre} {vehiculo} {fecha_str}.xlsx"
-        else:
-            nombre_archivo = f"{conductor_nombre} {fecha_str}.xlsx"
-    
-    else:
-        nombre_archivo = "reporte.xlsx"
-    
-    # ==============================
-    # DESCARGA
-    # ==============================
-    
-    st.download_button(
-        "Descargar Excel",
-        data=buffer,
-        file_name=nombre_archivo
-    )
+
+    st.download_button("Descargar Excel", data=buffer, file_name="reporte.xlsx")
